@@ -10,6 +10,7 @@ import android.opengl.Matrix;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.LayoutInflater;
+import android.view.View;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.Toast;
@@ -18,7 +19,7 @@ import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
-import android.view.View;
+
 
 import com.google.ar.core.Anchor;
 import com.google.ar.core.Camera;
@@ -47,6 +48,7 @@ public class MainActivity extends AppCompatActivity implements GLSurfaceView.Ren
     private static final int CAMERA_PERMISSION_REQUEST_CODE = 1;
     private static final String TAG = "AR_Cube";
 
+    // View components
     private GLSurfaceView surfaceView;
     private FrameLayout container;
     private Session arSession;
@@ -55,19 +57,33 @@ public class MainActivity extends AppCompatActivity implements GLSurfaceView.Ren
     private boolean sessionResumed = false;
     private boolean sessionInitialized = false;
 
+    // OpenGL components
     private int cameraProgram;
     private int cubeProgram;
     private int cameraTextureId;
 
+    // Buffers
     private FloatBuffer cameraVertexBuffer;
     private FloatBuffer cameraTexCoordBuffer;
     private FloatBuffer cubeVertexBuffer;
 
-    private float[] fixedAnchorMatrix = new float[16]; // Для хранения фиксированной матрицы якоря
-    private float[] modelMatrix = new float[16];       // Для матрицы модели
-    private float[] viewMatrix = new float[16];        // Для матрицы вида
-    private float[] projectionMatrix = new float[16];  // Для проекционной матрицы
+    // AR components
+    private Session arSession;
+    private Anchor qrAnchor;
+    private boolean qrScanned = false;
+    private boolean sessionResumed = false;
+    private boolean sessionInitialized = false;
 
+    // Matrices
+    private final float[] modelMatrix = new float[16];
+    private final float[] viewMatrix = new float[16];
+    private final float[] projectionMatrix = new float[16];
+    private final float[] mvpMatrix = new float[16];
+    private final float[] defaultViewMatrix = new float[16];
+    private final float[] anchorMatrix = new float[16];
+    private final float[] fixedAnchorMatrix = new float[16];
+
+    // Geometry data
     private final float[] cameraVertices = {
             -1.0f, -1.0f, 0.0f,
             1.0f, -1.0f, 0.0f,
@@ -112,46 +128,50 @@ public class MainActivity extends AppCompatActivity implements GLSurfaceView.Ren
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        setupViews();
+        initBuffers();
+        checkCameraPermission();
+    }
 
+    private void setupViews(){
         container = new FrameLayout(this);
         surfaceView = new GLSurfaceView(this);
-        container.addView(surfaceView);
-
+        
         LayoutInflater inflater = LayoutInflater.from(this);
         floatingCube = (ImageView) inflater.inflate(R.layout.floating_cube, container, false);
         floatingCube.setVisibility(View.GONE);
-        container.addView(floatingCube);
 
+        container.addView(surfaceView);
+        container.addView(floatingCube);
         setContentView(container);
 
         surfaceView.setEGLContextClientVersion(3);
         surfaceView.setRenderer(this);
         surfaceView.setRenderMode(GLSurfaceView.RENDERMODE_CONTINUOUSLY);
-
-        initBuffers();
-        checkCameraPermission();
     }
 
     private void initBuffers() {
-        ByteBuffer bb = ByteBuffer.allocateDirect(cameraVertices.length * 4);
+        cameraVertexBuffer = createFloatBuffer(CAMERA_VERTICES);
+        cameraTexCoordBuffer = createFloatBuffer(CAMERA_TEX_COORDS);
+        cubeVertexBuffer = createFloatBuffer(CUBE_VERTICES);
+        cubeIndexBuffer = createShortBuffer(CUBE_INDICES);
+    
+    }
+
+    private FloatBuffer createFloatBuffer(float[] array) {
+        ByteBuffer bb = ByteBuffer.allocateDirect(array.length * 4);
         bb.order(ByteOrder.nativeOrder());
-        cameraVertexBuffer = bb.asFloatBuffer();
-        cameraVertexBuffer.put(cameraVertices).position(0);
+        FloatBuffer buffer = bb.asFloatBuffer();
+        buffer.put(array).position(0);
+        return buffer;
+    }
 
-        ByteBuffer tb = ByteBuffer.allocateDirect(cameraTexCoords.length * 4);
-        tb.order(ByteOrder.nativeOrder());
-        cameraTexCoordBuffer = tb.asFloatBuffer();
-        cameraTexCoordBuffer.put(cameraTexCoords).position(0);
-
-        ByteBuffer cb = ByteBuffer.allocateDirect(cubeVertices.length * 4);
-        cb.order(ByteOrder.nativeOrder());
-        cubeVertexBuffer = cb.asFloatBuffer();
-        cubeVertexBuffer.put(cubeVertices).position(0);
-
-        ByteBuffer ib = ByteBuffer.allocateDirect(cubeIndices.length * 2);
-        ib.order(ByteOrder.nativeOrder());
-        cubeIndexBuffer = ib.asShortBuffer();
-        cubeIndexBuffer.put(cubeIndices).position(0);
+    private ShortBuffer createShortBuffer(short[] array) {
+        ByteBuffer bb = ByteBuffer.allocateDirect(array.length * 2);
+        bb.order(ByteOrder.nativeOrder());
+        ShortBuffer buffer = bb.asShortBuffer();
+        buffer.put(array).position(0);
+        return buffer;
     }
 
     private void checkCameraPermission() {
@@ -357,24 +377,24 @@ public class MainActivity extends AppCompatActivity implements GLSurfaceView.Ren
                     if (qrScanned && qrAnchor != null && qrAnchor.getTrackingState() == TrackingState.TRACKING) {
                         qrAnchor.getPose().toMatrix(anchorMatrix, 0);
 
-                        // Обновляем положение куба
+                        // Updating the position of the cube
                         runOnUiThread(() -> floatingCube.setVisibility(View.VISIBLE));
 
-                        // Рисуем AR-объекты
+                        // Drawing AR objects
                         drawCube();
                     }
                 }
 
-                // Рендерим фид с камеры
+                // Rendering the feed from the camera
                 drawCameraFeed();
 
-                // Отключаем тест глубины для отображения квадрата поверх
+                // Disable the depth test for displaying the square over the top
                 GLES30.glDisable(GLES30.GL_DEPTH_TEST);
 
-                // Отображаем квадрат поверх изображения
+                // Display a square on top of the image
                 drawOverlaySquare();
 
-                // Включаем тест глубины обратно
+                // Turning the depth test back on
                 GLES30.glEnable(GLES30.GL_DEPTH_TEST);
             } catch (CameraNotAvailableException | SessionPausedException e) {
                 Log.e(TAG, "Error during AR frame update", e);
@@ -390,29 +410,29 @@ public class MainActivity extends AppCompatActivity implements GLSurfaceView.Ren
 
         GLES30.glUseProgram(cubeProgram);
 
-        // Устанавливаем матрицу модели для отображения квадрата на фиксированном месте
+        // Set the model matrix to display the square at a fixed location
         Matrix.setIdentityM(modelMatrix, 0);
 
-        // Смещаем квадрат в центр экрана (можно изменить координаты для других положений)
+        // Move the square to the center of the screen (you can change coordinates for other positions)
         Matrix.translateM(modelMatrix, 0, 0.0f, 0.0f, -0.5f);
 
-        // Масштабируем квадрат для лучшей видимости
+        // Scaling the square for better visibility
         Matrix.scaleM(modelMatrix, 0, 0.3f, 0.3f, 0.3f);
 
-        // Объединяем все матрицы (проекция * вид * модель)
+        // Merge all matrices (projection * view * model)
         Matrix.multiplyMM(mvpMatrix, 0, viewMatrix, 0, modelMatrix, 0);
         Matrix.multiplyMM(mvpMatrix, 0, projectionMatrix, 0, mvpMatrix, 0);
 
-        // Передаём итоговую матрицу в шейдер
+        // Passing the final matrix to the shader
         int mvpMatrixHandle = GLES30.glGetUniformLocation(cubeProgram, "uMVPMatrix");
         GLES30.glUniformMatrix4fv(mvpMatrixHandle, 1, false, mvpMatrix, 0);
 
-        // Устанавливаем данные вершин
+        // Set vertex data
         int positionHandle = GLES30.glGetAttribLocation(cubeProgram, "vPosition");
         GLES30.glEnableVertexAttribArray(positionHandle);
         GLES30.glVertexAttribPointer(positionHandle, 3, GLES30.GL_FLOAT, false, 0, cubeVertexBuffer);
 
-        // Рисуем квадрат как массив индексов
+        // Draw a square as an array of indices
         GLES30.glDrawElements(
                 GLES30.GL_TRIANGLES,
                 cubeIndices.length,
@@ -420,7 +440,7 @@ public class MainActivity extends AppCompatActivity implements GLSurfaceView.Ren
                 cubeIndexBuffer
         );
 
-        // Отключаем атрибут после завершения отрисовки
+        // Disable attribute after rendering is complete
         GLES30.glDisableVertexAttribArray(positionHandle);
 
         Log.d(TAG, "Square successfully rendered!");
@@ -482,32 +502,32 @@ public class MainActivity extends AppCompatActivity implements GLSurfaceView.Ren
 
         GLES30.glUseProgram(cubeProgram);
 
-        // Получаем текущую позу якоря
+        // Get the current anchor pose
         qrAnchor.getPose().toMatrix(anchorMatrix, 0);
 
-        // Устанавливаем матрицу модели для куба
+        // Set the model matrix for the cube
         Matrix.setIdentityM(modelMatrix, 0);
 
-        // Перемещаем куб в позицию якоря
+        // Move the cube to the anchor position
         Matrix.multiplyMM(modelMatrix, 0, anchorMatrix, 0, modelMatrix, 0);
 
-        // Масштабируем куб для визуализации
+        // Scaling the cube for visualization
         Matrix.scaleM(modelMatrix, 0, 0.2f, 0.2f, 0.2f);
 
-        // Вычисляем итоговую матрицу MVP (Model-View-Projection)
+        // Calculate the final MVP (Model-View-Projection) matrix
         Matrix.multiplyMM(mvpMatrix, 0, viewMatrix, 0, modelMatrix, 0);
         Matrix.multiplyMM(mvpMatrix, 0, projectionMatrix, 0, mvpMatrix, 0);
 
-        // Передаём матрицу MVP в шейдер
+        // Passing the MVP matrix to the shader
         int mvpMatrixHandle = GLES30.glGetUniformLocation(cubeProgram, "uMVPMatrix");
         GLES30.glUniformMatrix4fv(mvpMatrixHandle, 1, false, mvpMatrix, 0);
 
-        // Устанавливаем атрибуты вершин
+        // Set vertex attributes
         int positionHandle = GLES30.glGetAttribLocation(cubeProgram, "vPosition");
         GLES30.glEnableVertexAttribArray(positionHandle);
         GLES30.glVertexAttribPointer(positionHandle, 3, GLES30.GL_FLOAT, false, 0, cubeVertexBuffer);
 
-        // Рисуем куб
+        // Drawing a cube
         GLES30.glDrawElements(
                 GLES30.GL_TRIANGLES,
                 cubeIndices.length,
